@@ -92,7 +92,7 @@ class P2PNode:
             hello = protocol.receive_message(connection)
             if hello.get("type") != "hello":
                 raise ValueError("Expected HELLO message")
-            protocol.send_message(connection, {"type": "hello_ack", **self._hello()})
+            protocol.send_message(connection, {**self._hello(), "type": "hello_ack"})
             peer_id = hello.get("peer_id")
             if not isinstance(peer_id, str) or not peer_id:
                 raise ValueError("Invalid peer identity")
