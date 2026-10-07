@@ -63,10 +63,18 @@ class P2PNode:
         connection = socket.create_connection((host, port), timeout=5)
         connection.settimeout(None)
         try:
-            protocol.send_message(connection, self._hello())
+            hello = self._hello()
+            protocol.send_message(connection, hello)
+            self._event(
+                f"HELLO sent to {host}:{port} as {self.peer_name} [{self.peer_id}]"
+            )
+
             response = protocol.receive_message(connection)
-            if response.get("type") != "hello_ack":
-                raise ValueError("Peer did not return a HELLO acknowledgement")
+            self._validate_identity(response, "hello_ack")
+            self._event(
+                f"HELLO_ACK received from {response['peer_name']} "
+                f"[{response['peer_id']}]"
+            )
         except Exception:
             connection.close()
             raise
@@ -90,12 +98,18 @@ class P2PNode:
     def _handle_connection(self, connection, address, outgoing):
         try:
             hello = protocol.receive_message(connection)
-            if hello.get("type") != "hello":
-                raise ValueError("Expected HELLO message")
-            protocol.send_message(connection, {**self._hello(), "type": "hello_ack"})
-            peer_id = hello.get("peer_id")
-            if not isinstance(peer_id, str) or not peer_id:
-                raise ValueError("Invalid peer identity")
+            self._validate_identity(hello, "hello")
+            peer_id = hello["peer_id"]
+
+            self._event(
+                f"HELLO received from {hello['peer_name']} [{peer_id}]"
+            )
+
+            acknowledgement = {**self._hello(), "type": "hello_ack"}
+            protocol.send_message(connection, acknowledgement)
+            self._event(
+                f"HELLO_ACK sent to {hello['peer_name']} [{peer_id}]"
+            )
             self._register_peer(connection, hello, address)
             self._event(f"{hello.get('peer_name', 'Peer')} [{peer_id}] connected")
             self._receive_loop(connection, peer_id)
@@ -106,6 +120,22 @@ class P2PNode:
                 connection.close()
             except OSError:
                 pass
+
+    @staticmethod
+    def _validate_identity(message, expected_type):
+        if message.get("type") != expected_type:
+            raise ValueError(f"Expected {expected_type} message")
+
+        peer_id = message.get("peer_id")
+        peer_name = message.get("peer_name")
+        port = message.get("port")
+
+        if not isinstance(peer_id, str) or not peer_id:
+            raise ValueError("Invalid peer identity")
+        if not isinstance(peer_name, str) or not peer_name.strip():
+            raise ValueError("Invalid peer name")
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            raise ValueError("Invalid peer port")
 
     def _register_peer(self, connection, hello, address):
         peer_id = hello["peer_id"]
