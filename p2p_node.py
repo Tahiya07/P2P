@@ -7,8 +7,8 @@ import uuid
 
 import protocol
 
+
 CHUNK_SIZE = 64 * 1024
-HANDSHAKE_TIMEOUT = 5
 
 
 class P2PNode:
@@ -41,7 +41,7 @@ class P2PNode:
         self.server_socket = server
         self.running.set()
         threading.Thread(target=self._accept_loop, daemon=True).start()
-        self._event(f"Listening on port {server.getsockname()[1]}")
+        self._event(f"Listening on port {port}")
 
     def _accept_loop(self):
         while self.running.is_set():
@@ -53,221 +53,78 @@ class P2PNode:
                 break
             threading.Thread(
                 target=self._handle_connection,
-                args=(connection, address),
+                args=(connection, address, False),
                 daemon=True,
             ).start()
 
     def connect(self, host, port):
         if not self.running.is_set():
             raise RuntimeError("Start the peer before connecting")
-
-        connection_id = uuid.uuid4().hex
-        connection = socket.create_connection((host, port), timeout=HANDSHAKE_TIMEOUT)
-        connection.settimeout(HANDSHAKE_TIMEOUT)
+        connection = socket.create_connection((host, port), timeout=5)
+        connection.settimeout(None)
         try:
-            hello = self._hello(connection_id)
-            protocol.send_message(connection, hello)
-            self._event(f"HELLO sent to {host}:{port} [{self.peer_id}]")
-
+            protocol.send_message(connection, self._hello())
             response = protocol.receive_message(connection)
-            self._validate_identity(response, "hello_ack")
-            if response.get("connection_id") != connection_id:
-                raise ValueError("HELLO_ACK connection ID did not match the request")
-            if response["peer_id"] == self.peer_id:
-                raise ValueError("Cannot connect a peer to itself")
-            self._event(
-                f"HELLO_ACK received from {response['peer_name']} [{response['peer_id']}]"
-            )
-
-            # Do not register the accepted socket until the initiator confirms
-            # that it actually received HELLO_ACK. This prevents a duplicate
-            # connection from closing the socket while its initiator is waiting.
-            protocol.send_message(connection, {
-                "type": "hello_confirm",
-                "connection_id": connection_id,
-            })
-            result = protocol.receive_message(connection)
-            if result.get("connection_id") != connection_id:
-                raise ValueError("Handshake response connection ID did not match")
-            if result.get("type") == "hello_rejected":
-                connection.close()
-                self._event(
-                    f"Duplicate connection ignored for {response['peer_name']} "
-                    f"[{response['peer_id']}]"
-                )
-                return
-            if result.get("type") != "hello_ready":
-                raise ValueError(
-                    "Expected HELLO_READY after HELLO_ACK, received "
-                    f"{result.get('type')!r}"
-                )
-
-            connection.settimeout(None)
-            peer_info = dict(response)
-            peer_info["connection_id"] = connection_id
-            accepted = self._register_peer(
-                connection,
-                peer_info,
-                (host, port),
-                initiator_id=self.peer_id,
-                connection_id=connection_id,
-            )
-            if not accepted:
-                connection.close()
-                self._event(
-                    f"Duplicate connection ignored for {response['peer_name']} "
-                    f"[{response['peer_id']}]"
-                )
-                return
-
-            threading.Thread(
-                target=self._receive_loop,
-                args=(connection, response["peer_id"]),
-                daemon=True,
-            ).start()
-            self._event(f"Connected to {response['peer_name']} [{response['peer_id']}]")
+            if response.get("type") != "hello_ack":
+                raise ValueError("Peer did not return a HELLO acknowledgement")
         except Exception:
-            try:
-                connection.close()
-            except OSError:
-                pass
+            connection.close()
             raise
+        self._register_peer(connection, response, (host, port))
+        threading.Thread(
+            target=self._receive_loop,
+            args=(connection, response["peer_id"]),
+            daemon=True,
+        ).start()
+        self._event(f"Connected to {response.get('peer_name', host)} [{response['peer_id']}]")
 
-    def _hello(self, connection_id=None):
+    def _hello(self):
         address = self.server_socket.getsockname() if self.server_socket else ("0.0.0.0", 0)
-        message = {
+        return {
             "type": "hello",
             "peer_id": self.peer_id,
             "peer_name": self.peer_name,
             "port": address[1],
         }
-        if connection_id is not None:
-            message["connection_id"] = connection_id
-        return message
 
-    @staticmethod
-    def _validate_identity(message, expected_type):
-        if message.get("type") != expected_type:
-            raise ValueError(
-                f"Expected {expected_type}, received {message.get('type')!r}. "
-                "Ensure both peers are running the same updated project version."
-            )
-        peer_id = message.get("peer_id")
-        peer_name = message.get("peer_name")
-        port = message.get("port")
-        if not isinstance(peer_id, str) or not peer_id:
-            raise ValueError("Invalid peer identity in handshake")
-        if not isinstance(peer_name, str) or not peer_name.strip():
-            raise ValueError("Invalid peer name in handshake")
-        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-            raise ValueError("Invalid peer port in handshake")
-
-    def _handle_connection(self, connection, address):
-        connection.settimeout(HANDSHAKE_TIMEOUT)
+    def _handle_connection(self, connection, address, outgoing):
         try:
             hello = protocol.receive_message(connection)
-            self._validate_identity(hello, "hello")
-            peer_id = hello["peer_id"]
-            connection_id = hello.get("connection_id")
-            if not isinstance(connection_id, str) or not connection_id:
-                raise ValueError("Missing connection ID in HELLO")
-            if peer_id == self.peer_id:
-                protocol.send_message(connection, {
-                    "type": "hello_rejected",
-                    "connection_id": connection_id,
-                    "reason": "self_connection",
-                })
-                return
-
-            self._event(f"HELLO received from {hello['peer_name']} [{peer_id}]")
-            acknowledgement = self._hello(connection_id)
-            # Set the type after constructing identity metadata. If **self._hello()
-            # were unpacked after type='hello_ack', its type='hello' would override it.
-            acknowledgement["type"] = "hello_ack"
-            protocol.send_message(connection, acknowledgement)
-            self._event(f"HELLO_ACK sent to {hello['peer_name']} [{peer_id}]")
-
-            confirmation = protocol.receive_message(connection)
-            if confirmation.get("type") != "hello_confirm":
-                if confirmation.get("type") == "hello_reject":
-                    return
-                raise ValueError("Expected HELLO_CONFIRM after HELLO_ACK")
-            if confirmation.get("connection_id") != connection_id:
-                raise ValueError("HELLO_CONFIRM connection ID did not match")
-
-            accepted = self._register_peer(
-                connection,
-                hello,
-                address,
-                initiator_id=peer_id,
-                connection_id=connection_id,
-            )
-            if not accepted:
-                protocol.send_message(connection, {
-                    "type": "hello_rejected",
-                    "connection_id": connection_id,
-                    "reason": "duplicate_connection",
-                })
-                self._event(
-                    f"Duplicate connection ignored for {hello['peer_name']} [{peer_id}]"
-                )
-                return
-
-            protocol.send_message(connection, {
-                "type": "hello_ready",
-                "connection_id": connection_id,
-            })
-            connection.settimeout(None)
-            self._event(f"{hello['peer_name']} [{peer_id}] connected")
+            if hello.get("type") != "hello":
+                raise ValueError("Expected HELLO message")
+            # Set the type after expanding _hello(), because _hello() contains
+            # "type": "hello" and would otherwise overwrite the acknowledgement.
+            protocol.send_message(connection, {**self._hello(), "type": "hello_ack"})
+            peer_id = hello.get("peer_id")
+            if not isinstance(peer_id, str) or not peer_id:
+                raise ValueError("Invalid peer identity")
+            self._register_peer(connection, hello, address)
+            self._event(f"{hello.get('peer_name', 'Peer')} [{peer_id}] connected")
             self._receive_loop(connection, peer_id)
         except (OSError, ValueError, ConnectionError, UnicodeError) as exc:
             if self.running.is_set():
                 self._event(f"[ERROR] Connection from {address[0]} failed: {exc}")
-        finally:
             try:
                 connection.close()
             except OSError:
                 pass
 
-    def _register_peer(self, connection, hello, address, initiator_id, connection_id):
-        """Register one live connection and deterministically resolve duplicates.
-
-        If both peers initiate connections concurrently, both ends prefer the same
-        connection: the one with the lexicographically smaller (initiator peer ID,
-        connection ID) pair. A single connection is accepted regardless of direction.
-        """
+    def _register_peer(self, connection, hello, address):
         peer_id = hello["peer_id"]
-        candidate_rank = (initiator_id, connection_id)
-        old_socket = None
         with self.peers_lock:
             old_peer = self.peers.get(peer_id)
-            if old_peer is not None:
-                if old_peer["socket"] is connection:
-                    return True
-                old_rank = (old_peer["initiator_id"], old_peer["connection_id"])
-                if old_rank <= candidate_rank:
-                    return False
-                old_socket = old_peer["socket"]
-
             self.peers[peer_id] = {
                 "socket": connection,
                 "name": hello.get("peer_name", "Peer"),
                 "address": address,
                 "send_lock": threading.Lock(),
-                "initiator_id": initiator_id,
-                "connection_id": connection_id,
             }
-
-        if old_socket is not None:
+        if old_peer and old_peer["socket"] is not connection:
             try:
-                old_socket.shutdown(socket.SHUT_RDWR)
+                old_peer["socket"].shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            try:
-                old_socket.close()
-            except OSError:
-                pass
-        return True
+            old_peer["socket"].close()
 
     def _receive_loop(self, connection, peer_id):
         while self.running.is_set():
@@ -275,10 +132,7 @@ class P2PNode:
                 message = protocol.receive_message(connection)
                 kind = message.get("type")
                 if kind == "text":
-                    self._event(
-                        f"{message.get('sender_name', 'Peer')} -> You: "
-                        f"{message.get('message', '')}"
-                    )
+                    self._event(f"{message.get('sender_name', 'Peer')} -> You: {message.get('message', '')}")
                 elif kind == "file":
                     self._receive_file(connection, message)
                 else:
@@ -382,9 +236,6 @@ class P2PNode:
                 peer["socket"].shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            try:
-                peer["socket"].close()
-            except OSError:
-                pass
+            peer["socket"].close()
             self._event(f"{peer['name']} [{peer_id}] disconnected")
         self._event("Peer stopped")
