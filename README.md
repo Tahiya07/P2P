@@ -16,25 +16,29 @@ Download or extract the project folder. If Python does not include Tkinter on yo
 
 ## Run the application
 
-From the project folder, run:
-
-```text
-python main.py
-```
+From the project folder, run **python main.py**.
 
 Enter a peer name and an available listening port, then select **Start Peer**.
 
 ## Connect two peers
 
-Start each application instance with a different port. In the peer that will initiate the connection, enter the other computer's IP address and listening port in **Connect to Another Peer**, then select **Connect**. For two instances on the same computer, use `127.0.0.1` as the remote IP. Select a peer in **Connected Peers** to send it messages or files.
+Start each application instance with a different port. In the peer that will initiate the connection, enter the other computer's IP address and listening port in **Connect to Another Peer**, then select **Connect**. For two instances on the same computer, use 127.0.0.1 as the remote IP. Select a peer in **Connected Peers** to send it messages or files.
 
-For testing multiple peers on the same computer, use a different listening port for each instance. For peers on the same Wi-Fi/LAN, use the host computer's local IP address and listening port instead of `127.0.0.1`.
+For testing multiple peers on the same computer, use a different listening port for each instance. For peers on the same Wi-Fi/LAN, use the host computer's local IP address and listening port instead of 127.0.0.1.
+
+Both application instances must use the updated project files. The connection handshake exchanges HELLO and HELLO_ACK, followed by confirmation and readiness messages. This ensures the client has received the acknowledgement before the connection is registered and lets both peers resolve simultaneous duplicate connection attempts consistently.
 
 ## Send messages and transfer files
 
-Select a connected peer, type any message in **Send Text**, and select **Send**. To transfer a file, select **Choose File & Send** and choose the file. Files are transferred as binary data in chunks and saved in the receiver's `downloads/` folder. Existing files with the same name are saved with a numbered suffix.
+Select a connected peer, type any message in **Send Text**, and select **Send**. To transfer a file, select **Choose File & Send** and choose the file. Files are transferred as binary data in chunks and saved in the receiver's downloads/ folder. Existing files with the same name are saved with a numbered suffix.
 
 The application supports ordinary binary files, including text, image, audio, video, PDF, ZIP, and other files.
+
+## Regression tests
+
+The connection tests cover a normal one-way connection, text delivery, and simultaneous connection attempts. Run them from the project folder with:
+
+**python -m unittest discover -s tests -v**
 
 ## Testing and demonstration
 
@@ -57,7 +61,7 @@ The assignment also supports testing with two application instances on the same 
 
 ## Screenshots
 
-The repository includes demonstration screenshots in the `screenshots/` directory. They document the application's interface and demonstrated peer communication/file-sharing workflow.
+The repository includes demonstration screenshots in the screenshots/ directory. They document the application's interface and demonstrated peer communication/file-sharing workflow.
 
 ### Demonstration screenshots
 
@@ -75,13 +79,12 @@ The repository includes demonstration screenshots in the `screenshots/` director
 
 ## Project structure
 
-```text
 P2P/
-├── main.py
-├── p2p_node.py
-├── protocol.py
-├── requirements.txt
-├── README.md
-├── screenshots/
-└── downloads/
-```
+- main.py
+- p2p_node.py
+- protocol.py
+- requirements.txt
+- README.md
+- tests/
+- screenshots/
+- downloads/
